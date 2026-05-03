@@ -1,16 +1,18 @@
-"""
-Step 1: Participation in day-ahead and balancing markets.
-
-This module will include:
-- Scenario generation for wind production, day-ahead prices and system imbalance
-- One-price stochastic offering model
-- Two-price stochastic offering model
-- Cross-validation analysis
-- Risk-averse CVaR formulation
-"""
+from scenarios import generate_scenarios
+from models import solve_one_price
 
 
 def run_step1():
-    """Run the Step 1 workflow."""
+    """
+    Main function for Step 1.
+    """
 
-    print("Step 1 workflow not implemented yet.")
+    # Generate all combined scenarios
+    scenarios = generate_scenarios()
+
+    # Task 1.1: One-price balancing scheme
+    q_one, expected_profit_one, profits_one = solve_one_price(scenarios)
+
+
+if __name__ == "__main__":
+    run_step1()

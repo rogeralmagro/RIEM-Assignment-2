@@ -2,7 +2,7 @@
 
 This folder contains the input data used in the assignment.
 
-Possible contents:
+Contents:
 
 - Wind power scenarios
 - DK2 day-ahead price data
