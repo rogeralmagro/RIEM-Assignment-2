@@ -1,17 +1,638 @@
 """
 Step 2: Participation in ancillary service markets.
 
-This module will include:
-- Stochastic flexible load profile generation
-- FCR-D UP reserve bid calculation
-- ALSO-X method
-- CVaR method
-- Out-of-sample P90 verification
-- P90 threshold sensitivity from Energinet's perspective
+This module focuses on Task 2.1 of Assignment 2:
+- Generate stochastic flexible load profiles.
+- Determine the optimal DK2 FCR-D UP reserve bid.
+- Solve the in-sample P90 requirement using ALSO-X and CVaR.
+- Save numerical results and figures for the report.
+
 """
+
+from pathlib import Path
+import time
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+
+# ============================================================
+# Global settings for Step 2
+# ============================================================
+
+# Number of load profiles required by the assignment.
+N_PROFILES = 300
+
+# The first 100 profiles are used for in-sample optimization.
+N_IN_SAMPLE = 100
+
+# The remaining 200 profiles are used for out-of-sample verification.
+N_OUT_OF_SAMPLE = 200
+
+# One bidding hour is represented with minute-level resolution.
+N_MINUTES = 60
+
+# Load profile requirements from the assignment statement.
+MIN_LOAD_KW = 220.0
+MAX_LOAD_KW = 600.0
+MAX_RAMP_KW = 35.0
+
+# P90 reliability requirement.
+RELIABILITY_P90 = 0.90
+
+# Fixed seed to make the generated profiles reproducible.
+RANDOM_SEED = 42
+
+# File and folder paths.
+DATA_PATH = Path("data/load_profiles_step2.csv")
+RESULTS_DIR = Path("results")
+
+
+# ============================================================
+# 1. Load profile generation
+# ============================================================
+
+def generate_load_profiles(
+    n_profiles=N_PROFILES,
+    n_minutes=N_MINUTES,
+    min_load_kw=MIN_LOAD_KW,
+    max_load_kw=MAX_LOAD_KW,
+    max_ramp_kw=MAX_RAMP_KW,
+    seed=RANDOM_SEED,
+):
+    """
+    Generate stochastic flexible load profiles.
+
+    Each profile represents one bidding hour with minute-level resolution.
+
+    The generated profiles satisfy the assignment requirements:
+    - consumption remains between 220 and 600 kW,
+    - minute-to-minute changes do not exceed 35 kW,
+    - 300 profiles are generated in total.
+
+    The profiles are generated using a mean-reverting random walk. This
+    avoids having too many profiles stuck at the lower bound of 220 kW,
+    while still creating realistic stochastic variation.
+    """
+
+    # Create a random number generator with a fixed seed.
+    # This makes the generated load profiles reproducible.
+    rng = np.random.default_rng(seed)
+
+    # Store one row per profile and minute.
+    records = []
+
+    # Loop over all stochastic load profiles.
+    for profile in range(1, n_profiles + 1):
+
+        # Assign profile to in-sample or out-of-sample set.
+        profile_set = "in_sample" if profile <= N_IN_SAMPLE else "out_of_sample"
+
+        # Select a profile-specific average load level.
+        # Keeping this away from the lower bound avoids trivial P90 results.
+        target_load = rng.uniform(300.0, 560.0)
+
+        # Select the initial load close to the target level.
+        initial_low = max(min_load_kw, target_load - 70.0)
+        initial_high = min(max_load_kw, target_load + 70.0)
+        current_load = rng.uniform(initial_low, initial_high)
+
+        # Add a mild trend and a small sinusoidal component to create
+        # different profile shapes across the hour.
+        trend = rng.uniform(-0.6, 0.6)
+        phase = rng.uniform(0.0, 2.0 * np.pi)
+
+        # Loop over all minutes of the bidding hour.
+        for minute in range(1, n_minutes + 1):
+
+            if minute > 1:
+
+                # Normalized time within the hour.
+                hour_position = (minute - 1) / (n_minutes - 1)
+
+                # Smooth deterministic variation within the hour.
+                smooth_variation = 12.0 * np.sin(2.0 * np.pi * hour_position + phase)
+
+                # Minute-specific target load.
+                target_this_minute = (
+                    target_load
+                    + trend * (minute - n_minutes / 2.0)
+                    + smooth_variation
+                )
+
+                # Mean reversion pulls the load gently towards the target.
+                mean_reversion = 0.12 * (target_this_minute - current_load)
+
+                # Random noise creates stochastic behaviour.
+                noise = rng.normal(0.0, 10.0)
+
+                # Candidate ramp for this minute.
+                ramp = mean_reversion + noise
+
+                # Enforce the assignment ramping constraint.
+                ramp = np.clip(ramp, -max_ramp_kw, max_ramp_kw)
+
+                # Update the current load.
+                current_load += ramp
+
+                # Enforce the load range required by the assignment.
+                current_load = np.clip(current_load, min_load_kw, max_load_kw)
+
+            # Store the current minute of the current profile.
+            records.append({
+                "profile": profile,
+                "minute": minute,
+                "load_kW": round(float(current_load), 4),
+                "set": profile_set,
+            })
+
+    # Convert records into a DataFrame.
+    return pd.DataFrame(records)
+
+
+def save_load_profiles(load_profiles, output_path=DATA_PATH):
+    """
+    Save the generated load profiles to a CSV file.
+    """
+
+    # Make sure that the data folder exists.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save profiles without the pandas index.
+    load_profiles.to_csv(output_path, index=False)
+
+
+def load_or_generate_profiles(output_path=DATA_PATH):
+    """
+    Load existing Step 2 profiles if available.
+
+    If the file does not exist, the function generates new profiles and
+    saves them. This avoids changing the generated data every time the
+    workflow is executed.
+    """
+
+    # Check whether the load profile file already exists.
+    if output_path.exists():
+
+        # If it exists, load the same profiles again.
+        print(f"Loading existing load profiles from {output_path}")
+        return pd.read_csv(output_path)
+
+    # If the file does not exist, generate the profiles from scratch.
+    print("Generating new Step 2 load profiles...")
+    load_profiles = generate_load_profiles()
+
+    # Save the generated profiles so future runs use the same data.
+    save_load_profiles(load_profiles, output_path)
+    print(f"Saved load profiles to {output_path}")
+
+    return load_profiles
+
+
+# ============================================================
+# 2. Availability calculation
+# ============================================================
+
+def compute_profile_availability(load_profiles, min_operating_load_kw=0.0):
+    """
+    Compute the hourly upward reserve availability of each load profile.
+
+    For FCR-D UP, a flexible load provides upward reserve by reducing its
+    consumption. Since the reserve bid is submitted for the whole hour, the
+    bid must be available at every minute of that hour.
+
+    Therefore, for each profile s, the available reserve is calculated as:
+
+        A_s = min_m load_{m,s} - minimum operating load
+
+    In this assignment, the flexible load can consume between 0 and 600 kW.
+    Since no positive minimum operating consumption is imposed, the minimum
+    operating load is set to 0 kW.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns:
+        profile, set, availability_kW
+    """
+
+    # For each profile, find the minimum load over the 60 minutes.
+    # This is the maximum reserve bid that can be sustained for the full hour.
+    availability = (
+        load_profiles
+        .groupby(["profile", "set"], as_index=False)["load_kW"]
+        .min()
+        .rename(columns={"load_kW": "availability_kW"})
+    )
+
+    # Subtract the minimum operating load.
+    # Here this is zero, but keeping it as an argument makes the function flexible.
+    availability["availability_kW"] -= min_operating_load_kw
+
+    # Ensure no negative reserve availability appears.
+    availability["availability_kW"] = availability["availability_kW"].clip(lower=0.0)
+
+    return availability
+
+
+# ============================================================
+# 3. ALSO-X / empirical P90 solution
+# ============================================================
+
+def solve_alsox_p90(availability_values, reliability=RELIABILITY_P90):
+    """
+    Solve the empirical P90 reserve bidding problem.
+
+    The P90 requirement is interpreted as:
+
+        P(A_s >= r) >= 0.90
+
+    where:
+    - A_s is the available reserve in profile s,
+    - r is the hourly FCR-D UP reserve bid.
+
+    With 100 equally likely in-sample profiles and reliability 0.90,
+    at most 10 profiles may have A_s < r.
+
+    In this one-dimensional case, the ALSO-X / empirical chance-constrained
+    solution can be obtained directly from the sorted availability values.
+
+    Returns
+    -------
+    dict
+        Reserve bid and diagnostic information.
+    """
+
+    # Start timer to report computational time.
+    start_time = time.perf_counter()
+
+    # Convert input to a NumPy array.
+    availability_values = np.asarray(availability_values, dtype=float)
+
+    # Number of in-sample profiles.
+    n_samples = len(availability_values)
+
+    # Calculate the maximum number of allowed violations.
+    # For 100 profiles and P90, this gives 10.
+    max_violations = int(np.floor((1.0 - reliability) * n_samples + 1e-9))
+
+    # Sort availability values from lowest to highest.
+    sorted_availability = np.sort(availability_values)
+
+    # The largest feasible bid is the first value after the allowed violations.
+    # Example: if 10 violations are allowed, we choose the 11th lowest value.
+    bid_index = min(max_violations, n_samples - 1)
+    reserve_bid = sorted_availability[bid_index]
+
+    # Identify which profiles violate the selected reserve bid.
+    violations = availability_values < reserve_bid
+
+    # Count violations.
+    n_violations = int(np.sum(violations))
+
+    # Compute the empirical reliability achieved by the selected bid.
+    achieved_reliability = 1.0 - n_violations / n_samples
+
+    # Calculate shortfalls for all in-sample profiles.
+    # Shortfall is positive only when the bid exceeds available reserve.
+    shortfalls = np.maximum(0.0, reserve_bid - availability_values)
+
+    # Stop timer.
+    solve_time = time.perf_counter() - start_time
+
+    # Return all relevant results in a dictionary.
+    return {
+        "method": "ALSO-X",
+        "reserve_bid_kW": round(float(reserve_bid), 4),
+        "reliability_target": reliability,
+        "achieved_reliability": round(float(achieved_reliability), 4),
+        "n_profiles": n_samples,
+        "n_violations": n_violations,
+        "max_allowed_violations": max_violations,
+        "expected_shortfall_kW": round(float(np.mean(shortfalls)), 4),
+        "max_shortfall_kW": round(float(np.max(shortfalls)), 4),
+        "solve_time_s": round(float(solve_time), 6),
+
+        # Equivalent compact MIP representation:
+        # one continuous reserve bid variable + one binary violation variable per profile.
+        "n_variables_equivalent_model": 1 + n_samples,
+
+        # Equivalent constraints:
+        # one feasibility constraint per profile, one violation-count constraint,
+        # and simple bid bounds.
+        "n_constraints_equivalent_model": n_samples + 3,
+    }
+
+
+# ============================================================
+# 4. CVaR solution
+# ============================================================
+
+def solve_cvar_p90(availability_values, reliability=RELIABILITY_P90):
+    """
+    Solve the CVaR-based reserve bidding problem.
+
+    The reserve shortfall loss is defined as:
+
+        loss_s = r - A_s
+
+    where:
+    - r is the reserve bid,
+    - A_s is the available reserve in profile s.
+
+    The CVaR approximation controls the worst tail of this loss
+    distribution. For P90, the relevant tail is the worst 10% of profiles.
+
+    In this simple scalar case, the CVaR-feasible bid is obtained as the
+    average availability in the lower 10% tail. This is usually more
+    conservative than the empirical P90 / ALSO-X bid.
+
+    Returns
+    -------
+    dict
+        Reserve bid and diagnostic information.
+    """
+
+    # Start timer to report computational time.
+    start_time = time.perf_counter()
+
+    # Convert input to a NumPy array.
+    availability_values = np.asarray(availability_values, dtype=float)
+
+    # Number of in-sample profiles.
+    n_samples = len(availability_values)
+
+    # Compute the number of profiles included in the lower tail.
+    # For P90 and 100 profiles, the tail contains 10 profiles.
+    if reliability >= 1.0:
+        tail_count = 1
+    else:
+        tail_count = int(np.ceil((1.0 - reliability) * n_samples))
+
+    # Ensure that the tail contains at least one profile and at most all profiles.
+    tail_count = max(1, min(tail_count, n_samples))
+
+    # Sort availability from lowest to highest.
+    sorted_availability = np.sort(availability_values)
+
+    # Compute the CVaR-based reserve bid.
+    # This is the mean availability of the worst lower-tail profiles.
+    reserve_bid = np.mean(sorted_availability[:tail_count])
+
+    # Identify which profiles violate the selected bid.
+    violations = availability_values < reserve_bid
+
+    # Count violations.
+    n_violations = int(np.sum(violations))
+
+    # Compute empirical reliability.
+    achieved_reliability = 1.0 - n_violations / n_samples
+
+    # Compute shortfalls for all profiles.
+    shortfalls = np.maximum(0.0, reserve_bid - availability_values)
+
+    # Stop timer.
+    solve_time = time.perf_counter() - start_time
+
+    # Return all relevant results in a dictionary.
+    return {
+        "method": "CVaR",
+        "reserve_bid_kW": round(float(reserve_bid), 4),
+        "reliability_target": reliability,
+        "achieved_reliability": round(float(achieved_reliability), 4),
+        "n_profiles": n_samples,
+        "n_violations": n_violations,
+        "tail_count": tail_count,
+        "expected_shortfall_kW": round(float(np.mean(shortfalls)), 4),
+        "max_shortfall_kW": round(float(np.max(shortfalls)), 4),
+        "solve_time_s": round(float(solve_time), 6),
+
+        # Equivalent linear CVaR model:
+        # variables: reserve bid r, VaR-related variable tau,
+        # and one auxiliary variable per profile.
+        "n_variables_equivalent_model": 2 + n_samples,
+
+        # Equivalent constraints:
+        # one CVaR constraint, one shortfall constraint per profile,
+        # non-negativity constraints for auxiliary variables, and bid bounds.
+        "n_constraints_equivalent_model": 2 * n_samples + 3,
+    }
+
+
+# ============================================================
+# 5. Plotting for Task 2.1
+# ============================================================
+
+def plot_in_sample_profiles(load_profiles, results, output_path):
+    """
+    Plot the 100 in-sample load profiles and the reserve bids.
+
+    This figure shows the minute-level load trajectories used for the
+    in-sample optimization. The horizontal dashed lines represent the
+    reserve bids obtained with ALSO-X and CVaR.
+    """
+
+    # Select only the 100 in-sample profiles.
+    in_sample = load_profiles[load_profiles["set"] == "in_sample"]
+
+    # Create a new figure.
+    plt.figure(figsize=(9, 5))
+
+    # Plot each in-sample load profile as a thin line.
+    for _, group in in_sample.groupby("profile"):
+        plt.plot(
+            group["minute"],
+            group["load_kW"],
+            linewidth=0.8,
+            alpha=0.35,
+        )
+
+    # Add one horizontal line for each reserve bid.
+    for result in results:
+        plt.axhline(
+            result["reserve_bid_kW"],
+            linestyle="--",
+            linewidth=2,
+            label=f'{result["method"]} bid = {result["reserve_bid_kW"]:.2f} kW',
+        )
+
+    # Add labels, title and legend.
+    plt.xlabel("Minute")
+    plt.ylabel("Load / available upward reserve [kW]")
+    plt.title("In-sample flexible load profiles and optimal reserve bids")
+    plt.legend()
+
+    # Improve layout before saving.
+    plt.tight_layout()
+
+    # Make sure the results folder exists.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save the figure.
+    plt.savefig(output_path, dpi=300)
+
+    # Close the figure to avoid memory issues.
+    plt.close()
+
+
+def plot_availability_distribution(availability, results, output_path):
+    """
+    Plot the distribution of in-sample hourly reserve availability.
+
+    The hourly availability of each profile is computed as the minimum load
+    over the bidding hour. The vertical dashed lines show the reserve bids
+    obtained with ALSO-X and CVaR.
+    """
+
+    # Select availability values for the 100 in-sample profiles.
+    in_sample = availability[availability["set"] == "in_sample"]
+
+    # Create a new figure.
+    plt.figure(figsize=(8, 5))
+
+    # Plot histogram of hourly reserve availability.
+    plt.hist(
+        in_sample["availability_kW"],
+        bins=15,
+        edgecolor="black",
+        alpha=0.75,
+    )
+
+    # Add vertical lines for the reserve bids.
+    for result in results:
+        plt.axvline(
+            result["reserve_bid_kW"],
+            linestyle="--",
+            linewidth=2,
+            label=f'{result["method"]} bid = {result["reserve_bid_kW"]:.2f} kW',
+        )
+
+    # Add labels, title and legend.
+    plt.xlabel("Hourly reserve availability [kW]")
+    plt.ylabel("Number of profiles")
+    plt.title("Distribution of in-sample reserve availability")
+    plt.legend()
+
+    # Improve layout before saving.
+    plt.tight_layout()
+
+    # Make sure the results folder exists.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Save the figure.
+    plt.savefig(output_path, dpi=300)
+
+    # Close the figure to avoid memory issues.
+    plt.close()
+
+
+# ============================================================
+# 6. Task 2.1 workflow
+# ============================================================
+
+def run_task_2_1():
+    """
+    Run Task 2.1 completely.
+
+    This function executes the full Task 2.1 workflow:
+    1. Load or generate the 300 load profiles.
+    2. Compute the hourly reserve availability of each profile.
+    3. Select the 100 in-sample profiles.
+    4. Solve the P90 reserve bid with ALSO-X.
+    5. Solve the P90 reserve bid with CVaR.
+    6. Save tables and figures for the report.
+    """
+
+    # Make sure the results folder exists.
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load or generate the 300 stochastic load profiles.
+    load_profiles = load_or_generate_profiles()
+
+    # Compute hourly reserve availability A_s for each profile.
+    # This is the minimum load over the 60 minutes of each profile.
+    availability = compute_profile_availability(load_profiles)
+
+    # Select only the 100 in-sample profiles for Task 2.1.
+    in_sample_availability = availability.loc[
+        availability["set"] == "in_sample",
+        "availability_kW",
+    ].to_numpy()
+
+    # Solve the empirical P90 / ALSO-X reserve bidding problem.
+    alsox_result = solve_alsox_p90(
+        in_sample_availability,
+        reliability=RELIABILITY_P90,
+    )
+
+    # Solve the CVaR-based reserve bidding problem.
+    cvar_result = solve_cvar_p90(
+        in_sample_availability,
+        reliability=RELIABILITY_P90,
+    )
+
+    # Store both results in a list for tables and plots.
+    results = [alsox_result, cvar_result]
+
+    # Convert result dictionaries to a DataFrame.
+    results_df = pd.DataFrame(results)
+
+    # Save the Task 2.1 numerical results.
+    results_df.to_csv(
+        RESULTS_DIR / "task_2_1_results.csv",
+        index=False,
+    )
+
+    # Save the computed availability values for later report checks.
+    availability.to_csv(
+        RESULTS_DIR / "task_2_1_availability.csv",
+        index=False,
+    )
+
+    # Plot all in-sample load profiles and overlay the reserve bids.
+    plot_in_sample_profiles(
+        load_profiles,
+        results,
+        RESULTS_DIR / "task_2_1_in_sample_profiles.png",
+    )
+
+    # Plot the distribution of hourly availability and overlay the reserve bids.
+    plot_availability_distribution(
+        availability,
+        results,
+        RESULTS_DIR / "task_2_1_availability_distribution.png",
+    )
+
+    # Print a compact summary in the terminal.
+    print("\nTask 2.1 completed successfully.")
+    print("--------------------------------")
+    print(results_df[[
+        "method",
+        "reserve_bid_kW",
+        "achieved_reliability",
+        "n_violations",
+        "expected_shortfall_kW",
+        "max_shortfall_kW",
+        "solve_time_s",
+    ]])
+
+    # Print the files generated by this workflow.
+    print("\nGenerated files:")
+    print(f"- {DATA_PATH}")
+    print(f"- {RESULTS_DIR / 'task_2_1_results.csv'}")
+    print(f"- {RESULTS_DIR / 'task_2_1_availability.csv'}")
+    print(f"- {RESULTS_DIR / 'task_2_1_in_sample_profiles.png'}")
+    print(f"- {RESULTS_DIR / 'task_2_1_availability_distribution.png'}")
 
 
 def run_step2():
-    """Run the Step 2 workflow."""
+    """
+    Run the Step 2 workflow.
 
-    print("Step 2 workflow not implemented yet.")
+    At this stage, only Task 2.1 is implemented. Tasks 2.2 and 2.3 will
+    be added after validating the in-sample reserve bidding results.
+    """
+
+    # Run Task 2.1.
+    run_task_2_1()
