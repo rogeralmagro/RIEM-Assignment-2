@@ -625,14 +625,402 @@ def run_task_2_1():
     print(f"- {RESULTS_DIR / 'task_2_1_in_sample_profiles.png'}")
     print(f"- {RESULTS_DIR / 'task_2_1_availability_distribution.png'}")
 
+# ============================================================
+# 7. Out-of-sample verification for Task 2.2
+# ============================================================
+
+def verify_reserve_bid_out_of_sample(load_profiles, reserve_bid_kw, method):
+    """
+    Verify a fixed reserve bid on the 200 out-of-sample profiles.
+
+    In Task 2.2 we do not solve a new optimization problem. Instead, we take
+    the reserve bids obtained in Task 2.1 and check whether they also
+    satisfy the P90 requirement on unseen load profiles.
+
+    The verification is done at two levels:
+    1. Profile level:
+       - uses the hourly availability A_s = min load during the hour.
+       - checks if A_s >= reserve bid.
+    2. Minute level:
+       - compares the reserve bid with the load at every minute.
+       - calculates minute-by-minute shortfalls.
+
+    Parameters
+    ----------
+    load_profiles : pandas.DataFrame
+        Full load profile dataset with in-sample and out-of-sample profiles.
+
+    reserve_bid_kw : float
+        Fixed reserve bid from Task 2.1.
+
+    method : str
+        Name of the method used to obtain the bid, e.g. "ALSO-X" or "CVaR".
+
+    Returns
+    -------
+    tuple
+        summary, profile_shortfalls, minute_shortfalls
+    """
+
+    # Select only the 200 out-of-sample profiles.
+    out_of_sample = load_profiles[load_profiles["set"] == "out_of_sample"].copy()
+
+    # Compute the hourly reserve availability for each out-of-sample profile.
+    # This is the minimum load over the 60 minutes of each profile.
+    profile_shortfalls = compute_profile_availability(out_of_sample)
+
+    # Store the method name and the fixed reserve bid used for verification.
+    profile_shortfalls["method"] = method
+    profile_shortfalls["reserve_bid_kW"] = reserve_bid_kw
+
+    # Compute the profile-level shortfall.
+    # If availability is lower than the bid, the difference is a shortfall.
+    profile_shortfalls["profile_shortfall_kW"] = np.maximum(
+        0.0,
+        reserve_bid_kw - profile_shortfalls["availability_kW"],
+    )
+
+    # A profile violates the reserve requirement if its availability is below the bid.
+    profile_shortfalls["profile_violation"] = (
+        profile_shortfalls["availability_kW"] < reserve_bid_kw
+    )
+
+    # Compute minute-level shortfalls.
+    # This compares the fixed bid with the load at every minute.
+    minute_shortfalls = out_of_sample.copy()
+    minute_shortfalls["method"] = method
+    minute_shortfalls["reserve_bid_kW"] = reserve_bid_kw
+
+    # If the load at a minute is lower than the bid, there is a shortfall.
+    minute_shortfalls["minute_shortfall_kW"] = np.maximum(
+        0.0,
+        reserve_bid_kw - minute_shortfalls["load_kW"],
+    )
+
+    # A minute violates the reserve requirement if load is below the bid.
+    minute_shortfalls["minute_violation"] = (
+        minute_shortfalls["load_kW"] < reserve_bid_kw
+    )
+
+    # Count out-of-sample profiles.
+    n_profiles = profile_shortfalls["profile"].nunique()
+
+    # Count profile-level violations.
+    n_violating_profiles = int(profile_shortfalls["profile_violation"].sum())
+
+    # Compute achieved out-of-sample reliability.
+    achieved_reliability = 1.0 - n_violating_profiles / n_profiles
+
+    # Count minute-level violations.
+    n_violating_minutes = int(minute_shortfalls["minute_violation"].sum())
+    n_total_minutes = len(minute_shortfalls)
+
+    # Compute all relevant summary metrics.
+    summary = {
+        "method": method,
+        "fixed_reserve_bid_kW": round(float(reserve_bid_kw), 4),
+        "n_out_of_sample_profiles": n_profiles,
+        "achieved_out_of_sample_reliability": round(float(achieved_reliability), 4),
+        "n_violating_profiles": n_violating_profiles,
+        "expected_profile_shortfall_kW": round(
+            float(profile_shortfalls["profile_shortfall_kW"].mean()), 4
+        ),
+        "max_profile_shortfall_kW": round(
+            float(profile_shortfalls["profile_shortfall_kW"].max()), 4
+        ),
+        "n_total_minutes": n_total_minutes,
+        "n_violating_minutes": n_violating_minutes,
+        "minute_violation_share": round(
+            float(n_violating_minutes / n_total_minutes), 4
+        ),
+        "expected_minute_shortfall_kW": round(
+            float(minute_shortfalls["minute_shortfall_kW"].mean()), 4
+        ),
+        "max_minute_shortfall_kW": round(
+            float(minute_shortfalls["minute_shortfall_kW"].max()), 4
+        ),
+    }
+
+    return summary, profile_shortfalls, minute_shortfalls
+
+
+def plot_out_of_sample_profiles(load_profiles, bids, output_path):
+    """
+    Plot the 200 out-of-sample load profiles and the fixed reserve bids.
+
+    This figure is useful to visually check whether the bids obtained in
+    Task 2.1 remain reasonable for unseen profiles.
+    """
+
+    # Select only out-of-sample profiles.
+    out_of_sample = load_profiles[load_profiles["set"] == "out_of_sample"]
+
+    # Create a new figure.
+    plt.figure(figsize=(9, 5))
+
+    # Plot each out-of-sample profile.
+    for _, group in out_of_sample.groupby("profile"):
+        plt.plot(
+            group["minute"],
+            group["load_kW"],
+            linewidth=0.7,
+            alpha=0.25,
+        )
+
+    # Add one horizontal line for each fixed reserve bid.
+    for method, bid in bids.items():
+        plt.axhline(
+            bid,
+            linestyle="--",
+            linewidth=2,
+            label=f"{method} bid = {bid:.2f} kW",
+        )
+
+    # Add labels, title and legend.
+    plt.xlabel("Minute")
+    plt.ylabel("Load / available upward reserve [kW]")
+    plt.title("Out-of-sample flexible load profiles and fixed reserve bids")
+    plt.legend()
+
+    # Save the figure.
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+
+def plot_out_of_sample_shortfalls(profile_shortfalls, output_path):
+    """
+    Plot the distribution of profile-level out-of-sample shortfalls.
+
+    The profile-level shortfall is based on the minimum load in each
+    out-of-sample profile. This is the most relevant shortfall measure for
+    the hourly reserve bid, because the bid must be feasible throughout
+    the full hour.
+    """
+
+    # Create a new figure.
+    plt.figure(figsize=(8, 5))
+
+    # Define common bins so ALSO-X and CVaR can be compared fairly.
+    max_shortfall = max(profile_shortfalls["profile_shortfall_kW"].max(), 1.0)
+    bins = np.linspace(0.0, max_shortfall, 16)
+
+    # Plot one histogram per method.
+    for method in profile_shortfalls["method"].unique():
+        method_data = profile_shortfalls[
+            profile_shortfalls["method"] == method
+        ]
+
+        plt.hist(
+            method_data["profile_shortfall_kW"],
+            bins=bins,
+            alpha=0.65,
+            edgecolor="black",
+            label=method,
+        )
+
+    # Add labels, title and legend.
+    plt.xlabel("Profile-level reserve shortfall [kW]")
+    plt.ylabel("Number of out-of-sample profiles")
+    plt.title("Out-of-sample reserve shortfall distribution")
+    plt.legend()
+
+    # Save the figure.
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+def plot_positive_out_of_sample_shortfalls(profile_shortfalls, output_path):
+    """
+    Plot the distribution of positive profile-level out-of-sample shortfalls only.
+
+    This figure excludes the many profiles with zero shortfall, so it provides
+    a clearer comparison of the severity of shortfalls under ALSO-X and CVaR.
+    """
+
+    # Keep only profiles with strictly positive shortfall.
+    positive_shortfalls = profile_shortfalls[
+        profile_shortfalls["profile_shortfall_kW"] > 0
+    ].copy()
+
+    # If no positive shortfalls exist, skip the plot safely.
+    if positive_shortfalls.empty:
+        print("No positive shortfalls found. Positive-shortfall plot not created.")
+        return
+
+    # Create a new figure.
+    plt.figure(figsize=(8, 5))
+
+    # Define common bins for a fair comparison between methods.
+    max_shortfall = positive_shortfalls["profile_shortfall_kW"].max()
+    bins = np.linspace(0.0, max_shortfall, 12)
+
+    # Plot one histogram per method.
+    for method in positive_shortfalls["method"].unique():
+        method_data = positive_shortfalls[
+            positive_shortfalls["method"] == method
+        ]
+
+        plt.hist(
+            method_data["profile_shortfall_kW"],
+            bins=bins,
+            alpha=0.65,
+            edgecolor="black",
+            label=method,
+        )
+
+    # Add labels, title and legend.
+    plt.xlabel("Positive profile-level reserve shortfall [kW]")
+    plt.ylabel("Number of violating out-of-sample profiles")
+    plt.title("Distribution of positive out-of-sample reserve shortfalls")
+    plt.legend()
+
+    # Save the figure.
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+
+def run_task_2_2():
+    """
+    Run Task 2.2 completely.
+
+    This function:
+    1. Loads the same 300 load profiles used in Task 2.1.
+    2. Recomputes the Task 2.1 bids from the in-sample profiles.
+    3. Tests those fixed bids on the 200 out-of-sample profiles.
+    4. Saves result tables and figures for the report.
+    """
+
+    # Make sure the results folder exists.
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Load the existing load profiles.
+    load_profiles = load_or_generate_profiles()
+
+    # Compute profile-level availability for all 300 profiles.
+    availability = compute_profile_availability(load_profiles)
+
+    # Select the 100 in-sample profiles.
+    in_sample_availability = availability.loc[
+        availability["set"] == "in_sample",
+        "availability_kW",
+    ].to_numpy()
+
+    # Recompute the fixed bids from Task 2.1.
+    # This avoids manually hard-coding the bid values.
+    alsox_result = solve_alsox_p90(
+        in_sample_availability,
+        reliability=RELIABILITY_P90,
+    )
+
+    cvar_result = solve_cvar_p90(
+        in_sample_availability,
+        reliability=RELIABILITY_P90,
+    )
+
+    # Store the fixed bids in a dictionary.
+    bids = {
+        "ALSO-X": alsox_result["reserve_bid_kW"],
+        "CVaR": cvar_result["reserve_bid_kW"],
+    }
+
+    # Lists used to collect results from both methods.
+    summary_rows = []
+    profile_shortfall_tables = []
+    minute_shortfall_tables = []
+
+    # Verify each fixed bid on the out-of-sample profiles.
+    for method, bid in bids.items():
+
+        # Run out-of-sample verification for this method.
+        summary, profile_shortfalls, minute_shortfalls = (
+            verify_reserve_bid_out_of_sample(
+                load_profiles=load_profiles,
+                reserve_bid_kw=bid,
+                method=method,
+            )
+        )
+
+        # Store results.
+        summary_rows.append(summary)
+        profile_shortfall_tables.append(profile_shortfalls)
+        minute_shortfall_tables.append(minute_shortfalls)
+
+    # Convert results to DataFrames.
+    results_df = pd.DataFrame(summary_rows)
+    profile_shortfalls_df = pd.concat(profile_shortfall_tables, ignore_index=True)
+    minute_shortfalls_df = pd.concat(minute_shortfall_tables, ignore_index=True)
+
+    # Save numerical results for the report.
+    results_df.to_csv(
+        RESULTS_DIR / "task_2_2_results.csv",
+        index=False,
+    )
+
+    profile_shortfalls_df.to_csv(
+        RESULTS_DIR / "task_2_2_profile_shortfalls.csv",
+        index=False,
+    )
+
+    minute_shortfalls_df.to_csv(
+        RESULTS_DIR / "task_2_2_minute_shortfalls.csv",
+        index=False,
+    )
+
+    # Plot the out-of-sample profiles and fixed bids.
+    plot_out_of_sample_profiles(
+        load_profiles,
+        bids,
+        RESULTS_DIR / "task_2_2_out_of_sample_profiles.png",
+    )
+
+    # Plot the distribution of out-of-sample shortfalls.
+    plot_out_of_sample_shortfalls(
+        profile_shortfalls_df,
+        RESULTS_DIR / "task_2_2_shortfall_distribution.png",
+    )
+
+    # Plot only the positive profile-level shortfalls.
+    plot_positive_out_of_sample_shortfalls(
+        profile_shortfalls_df,
+        RESULTS_DIR / "task_2_2_positive_shortfall_distribution.png",
+    )
+
+    # Print a compact summary in the terminal.
+    print("\nTask 2.2 completed successfully.")
+    print("--------------------------------")
+    print(results_df[[
+        "method",
+        "fixed_reserve_bid_kW",
+        "achieved_out_of_sample_reliability",
+        "n_violating_profiles",
+        "expected_profile_shortfall_kW",
+        "max_profile_shortfall_kW",
+    ]])
+
+    # Print generated files.
+    print("\nGenerated files:")
+    print(f"- {RESULTS_DIR / 'task_2_2_results.csv'}")
+    print(f"- {RESULTS_DIR / 'task_2_2_profile_shortfalls.csv'}")
+    print(f"- {RESULTS_DIR / 'task_2_2_minute_shortfalls.csv'}")
+    print(f"- {RESULTS_DIR / 'task_2_2_out_of_sample_profiles.png'}")
+    print(f"- {RESULTS_DIR / 'task_2_2_shortfall_distribution.png'}")
+    print(f"- {RESULTS_DIR / 'task_2_2_positive_shortfall_distribution.png'}")
 
 def run_step2():
     """
     Run the Step 2 workflow.
 
-    At this stage, only Task 2.1 is implemented. Tasks 2.2 and 2.3 will
-    be added after validating the in-sample reserve bidding results.
+    Task 2.1 determines the in-sample reserve bids.
+    Task 2.2 verifies those fixed bids on the out-of-sample profiles.
+    Task 2.3
     """
 
     # Run Task 2.1.
     run_task_2_1()
+
+    # Run Task 2.2.
+    run_task_2_2()
