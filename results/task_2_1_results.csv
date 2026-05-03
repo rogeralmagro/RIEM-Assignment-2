@@ -1,0 +1,3 @@
+method,reserve_bid_kW,reliability_target,achieved_reliability,n_profiles,n_violations,max_allowed_violations,expected_shortfall_kW,max_shortfall_kW,solve_time_s,n_variables_equivalent_model,n_constraints_equivalent_model,tail_count
+ALSO-X,282.303,0.9,0.9,100,10,10.0,1.8423,46.3115,0.000705,101,103,
+CVaR,263.8803,0.9,0.96,100,4,,0.6443,27.8888,6.4e-05,102,203,10.0

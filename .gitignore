@@ -20,8 +20,8 @@ env/
 .ipynb_checkpoints/
 
 # Generated results
-results/*
-!results/README.md
+# results/*
+# !results/README.md
 
 # Temporary files
 *.log
