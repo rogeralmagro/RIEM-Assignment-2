@@ -90,7 +90,6 @@ def solve_two_price(scenarios):
     p_DA = model.addVars(T, lb=0, ub=capacity, name="p_DA")
     delta_pos = model.addVars(S, T, lb=0, name="delta_pos")
     delta_neg = model.addVars(S, T, lb=0, name="delta_neg")
-    # z=model.addVars(S, T, vtype=GRB.BINARY, name="z")
 
     # wind - p_DA = delta_pos - delta_neg
     for s in S:
@@ -100,10 +99,6 @@ def solve_two_price(scenarios):
                 wind - p_DA[t] == delta_pos[s, t] - delta_neg[s, t],
                 name=f"imbalance_{s}_{t}"
             )
-            # # If z = 1, delta_pos can be positive, delta_neg forced to 0
-            # # If z = 0, delta_neg can be positive, delta_pos forced to 0
-            # model.addConstr(delta_pos[s, t] <= M * z[s, t])
-            # model.addConstr(delta_neg[s, t] <= M * (1 - z[s, t]))
 
     # Objective
     obj = gp.LinExpr()
@@ -139,3 +134,55 @@ def solve_two_price(scenarios):
     print("Expected profit:", expected_profit)
 
     return q_DA, expected_profit, profits, model
+
+def cross_validation(scenarios, fold_size=200, n_folds=8, seed=42, run_name="cv_8fold_200"):
+
+    scenarios_cv = scenarios.copy()
+
+    rng = np.random.default_rng(seed)
+    rng.shuffle(scenarios_cv)
+
+    required_scenarios = fold_size * n_folds
+
+    if required_scenarios > len(scenarios_cv):
+        raise ValueError(
+            f"fold_size * n_folds = {required_scenarios}, "
+            f"but only {len(scenarios_cv)} scenarios are available."
+        )
+
+    scenarios_cv = scenarios_cv[:required_scenarios]
+
+    results = []
+
+    for i in range(n_folds):
+
+        in_sample = scenarios_cv[i*fold_size:(i+1)*fold_size]
+        out_sample = scenarios_cv[:i*fold_size] + scenarios_cv[(i+1)*fold_size:]
+
+        # --- ONE PRICE ---
+        q_one, in_profit_one, _ = solve_one_price(in_sample)
+        out_profit_one, _ = evaluate_one_price(q_one, out_sample)
+
+        # --- TWO PRICE ---
+        q_two, in_profit_two, _, _ = solve_two_price(in_sample)
+        out_profit_two, _ = evaluate_two_price(q_two, out_sample)
+
+        results.append({
+            "run_name": run_name,
+            "fold": i + 1,
+            "fold_size": fold_size,
+            "n_folds": n_folds,
+
+            "one_in": in_profit_one,
+            "one_out": out_profit_one,
+            "one_gap": in_profit_one - out_profit_one,
+
+            "two_in": in_profit_two,
+            "two_out": out_profit_two,
+            "two_gap": in_profit_two - out_profit_two,
+
+            "q_one": q_one,
+            "q_two": q_two
+        })
+
+    return results
