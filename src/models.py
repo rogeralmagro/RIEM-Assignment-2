@@ -1,5 +1,6 @@
 import numpy as np
-
+import gurobipy as gp
+from gurobipy import GRB
 
 def evaluate_one_price(q_DA, scenarios):
     """Evaluate profit of a given day-ahead strategy over all scenarios."""
@@ -44,3 +45,97 @@ def solve_one_price(scenarios):
     print("Expected profit:", expected_profit)
 
     return q_DA, expected_profit, profits
+
+def evaluate_two_price(q_DA, scenarios):
+    """
+    Calculates the profit of a fixed day-ahead offer q_DAn under the two-price balancing scheme.
+    """
+    profits = []
+
+    for s in scenarios:
+        wind = s["wind"]
+        da = s["da_price"]
+        si = s["imbalance"]   # 1 = deficit, 0 = surplus
+
+        bp = np.where(si == 1, 1.25 * da, 0.85 * da)
+
+        delta = wind - q_DA
+
+        settlement_price = np.where(
+            ((si == 1) & (delta >= 0)) | ((si == 0) & (delta <= 0)),
+            da, # beneficial imbalance
+            bp  # harmful imbalance
+            )
+
+        profit = np.sum(
+            da * q_DA + settlement_price * delta
+        )
+
+        profits.append(profit)
+
+    return np.mean(profits), profits
+
+
+def solve_two_price(scenarios):
+    N = len(scenarios)
+    T = range(24)
+    S = range(N)
+    capacity = 500
+    prob = 1 / N
+    # M = capacity
+
+    model = gp.Model("two_price_wind")
+
+    # Variables
+    p_DA = model.addVars(T, lb=0, ub=capacity, name="p_DA")
+    delta_pos = model.addVars(S, T, lb=0, name="delta_pos")
+    delta_neg = model.addVars(S, T, lb=0, name="delta_neg")
+    # z=model.addVars(S, T, vtype=GRB.BINARY, name="z")
+
+    # wind - p_DA = delta_pos - delta_neg
+    for s in S:
+        for t in T:
+            wind = scenarios[s]["wind"][t]
+            model.addConstr(
+                wind - p_DA[t] == delta_pos[s, t] - delta_neg[s, t],
+                name=f"imbalance_{s}_{t}"
+            )
+            # # If z = 1, delta_pos can be positive, delta_neg forced to 0
+            # # If z = 0, delta_neg can be positive, delta_pos forced to 0
+            # model.addConstr(delta_pos[s, t] <= M * z[s, t])
+            # model.addConstr(delta_neg[s, t] <= M * (1 - z[s, t]))
+
+    # Objective
+    obj = gp.LinExpr()
+
+    for s in S:
+        for t in T:
+            da = scenarios[s]["da_price"][t]
+            si = scenarios[s]["imbalance"][t]
+            if si == 1:
+                bp = 1.25 * da
+                obj += prob * (
+                    da * p_DA[t]
+                    + da * delta_pos[s, t]
+                    - bp * delta_neg[s, t]
+                )
+            else:
+                bp = 0.85 * da
+                obj += prob * (
+                    da * p_DA[t]
+                    + bp * delta_pos[s, t]
+                    - da * delta_neg[s, t]
+                )
+
+    model.setObjective(obj, GRB.MAXIMIZE)
+    model.optimize()
+
+    q_DA = np.array([p_DA[t].X for t in T])
+    expected_profit = model.ObjVal
+    _, profits = evaluate_two_price(q_DA, scenarios)
+
+    print("\n--- TWO PRICE / GUROBIPY ---")
+    print("q_DA:", q_DA)
+    print("Expected profit:", expected_profit)
+
+    return q_DA, expected_profit, profits, model
