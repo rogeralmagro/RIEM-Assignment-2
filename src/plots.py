@@ -142,3 +142,113 @@ def summarize_cv_variability(all_results):
 
     df = pd.DataFrame(rows)
     df.to_csv("results/task_1_3_variability_summary.csv", index=False)
+
+def plot_expected_profit_vs_cvar(risk_results):
+    """
+    Plot expected profit against CVaR for Task 1.4.
+    """
+    os.makedirs("results", exist_ok=True)
+
+    df = pd.DataFrame([
+        {
+            "scheme": r["scheme"],
+            "beta": r["beta"],
+            "expected_profit": r["expected_profit"],
+            "cvar": r["cvar"],
+        }
+        for r in risk_results
+    ])
+
+    plt.figure()
+
+    for scheme in df["scheme"].unique():
+        data = df[df["scheme"] == scheme].sort_values("beta")
+
+        plt.plot(
+            data["cvar"],
+            data["expected_profit"],
+            marker="o",
+            label=scheme
+        )
+
+        for _, row in data.iterrows():
+            plt.annotate(
+                f'{row["beta"]}',
+                (row["cvar"], row["expected_profit"]),
+                fontsize=8
+            )
+
+    plt.xlabel("CVaR of profit, worst 10% scenarios")
+    plt.ylabel("Expected profit")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig("results/task_1_4_expected_profit_vs_cvar.png")
+    plt.close()
+
+
+def plot_risk_averse_offers(risk_results):
+    """
+    Plot how the day-ahead offers change with beta.
+    """
+    os.makedirs("results", exist_ok=True)
+
+    hours = range(1, 25)
+
+    for scheme in ["one-price", "two-price"]:
+        plt.figure()
+
+        for r in risk_results:
+            if r["scheme"] == scheme:
+                plt.step(
+                    hours,
+                    r["q_DA"],
+                    where="mid",
+                    label=f'beta={r["beta"]}'
+                )
+
+        plt.xlabel("Hour")
+        plt.ylabel("Day-ahead offer [MW]")
+        plt.xticks(range(1, 25))
+        plt.ylim(0, 520)
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.tight_layout()
+
+        filename = f"results/task_1_4_{scheme}_offers_vs_beta.png"
+        plt.savefig(filename)
+        plt.close()
+
+
+def plot_risk_averse_profit_distributions(risk_results):
+    """
+    Plot profit distributions for beta = 0 and largest beta.
+    """
+    os.makedirs("results", exist_ok=True)
+
+    for scheme in ["one-price", "two-price"]:
+        scheme_results = [r for r in risk_results if r["scheme"] == scheme]
+        scheme_results = sorted(scheme_results, key=lambda x: x["beta"])
+
+        selected = [scheme_results[0], scheme_results[-1]]
+
+        plt.figure()
+
+        for r in selected:
+            plt.hist(
+                r["profits"],
+                bins=50,
+                alpha=0.55,
+                label=f'beta={r["beta"]}'
+            )
+
+        plt.xlabel("Profit")
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.grid(True, linestyle="--", alpha=0.3)
+        plt.tight_layout()
+
+        filename = f"results/task_1_4_{scheme}_profit_distribution.png"
+        plt.savefig(filename)
+        plt.close()

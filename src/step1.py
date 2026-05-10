@@ -57,5 +57,20 @@ def run_step1():
     # Summary table for variability
     summarize_cv_variability(all_results)
 
+
+     # Task 1.4: Risk-Averse Offering Strategy
+    betas = [0, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00, 5.00] # Risk aversion parameters to sweep
+    # betas = [0, 0.01, 0.025, 0.05, 0.10, 0.25, 0.50, 1.00] # less agressive sweep
+
+    risk_results = run_risk_averse_sweep(
+        scenarios=scenarios,
+        betas=betas,
+        alpha=0.90
+    )
+
+    plot_expected_profit_vs_cvar(risk_results)
+    plot_risk_averse_offers(risk_results)
+    plot_risk_averse_profit_distributions(risk_results)
+
 if __name__ == "__main__":
     run_step1()
