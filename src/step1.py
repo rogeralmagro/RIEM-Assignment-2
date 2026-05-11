@@ -17,11 +17,11 @@ def run_step1():
 
     # Task 1.1: Offering Strategy Under a One-Price Balancing Scheme
     q_one, expected_profit_one, profits_one = solve_one_price(scenarios, verbose=False)
-    # plot_profit_distribution(profits_one, "1.1 one price")
+    plot_profit_distribution(profits_one, "1.1 one price")
 
     # Task 1.2: Offering Strategy Under a Two-Price Balancing Scheme
     q_two, expected_profit_two, profits_two, _ = solve_two_price(scenarios, verbose=False)
-    # plot_profit_distribution(profits_two, "1.2 two price")
+    plot_profit_distribution(profits_two, "1.2 two price")
 
     # hourly offers comparison
     plot_q_DA(q_one, q_two)
