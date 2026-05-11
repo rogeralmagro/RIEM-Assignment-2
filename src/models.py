@@ -5,6 +5,8 @@ import gurobipy as gp
 from gurobipy import GRB
 import pandas as pd
 
+default_seed = 42
+
 def evaluate_one_price(q_DA, scenarios):
     """Evaluate profit of a given day-ahead strategy over all scenarios."""
     
@@ -209,7 +211,12 @@ def compute_cvar_profit(profits, alpha=0.90):
     return float(np.mean(sorted_profits[:tail_count]))
 
 
-def solve_one_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
+def solve_one_price_risk_averse(
+    scenarios,
+    beta=0.0,
+    alpha=0.90,
+    seed=default_seed,
+):
     """
     Risk-averse one-price stochastic offering model using CVaR.
     This is solved as an LP using the standard CVaR linearization.
@@ -222,6 +229,7 @@ def solve_one_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
 
     model = gp.Model("one_price_risk_averse")
     model.Params.OutputFlag = 0
+    model.Params.Seed = seed
 
     # Decision variables
     p_DA = model.addVars(T, lb=0, ub=capacity, name="p_DA")
@@ -280,10 +288,16 @@ def solve_one_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
         "solve_time": model.Runtime,
         "n_variables": model.NumVars,
         "n_constraints": model.NumConstrs,
+        "seed": seed,
     }
 
 
-def solve_two_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
+def solve_two_price_risk_averse(
+    scenarios,
+    beta=0.0,
+    alpha=0.90,
+    seed=default_seed,
+):
     """
     Risk-averse two-price stochastic offering model using CVaR.
     """
@@ -295,6 +309,7 @@ def solve_two_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
 
     model = gp.Model("two_price_risk_averse")
     model.Params.OutputFlag = 0
+    model.Params.Seed = seed
 
     # Decision variables
     p_DA = model.addVars(T, lb=0, ub=capacity, name="p_DA")
@@ -374,10 +389,17 @@ def solve_two_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
         "solve_time": model.Runtime,
         "n_variables": model.NumVars,
         "n_constraints": model.NumConstrs,
+        "seed": seed,
     }
 
 
-def run_risk_averse_sweep(scenarios, betas=None, alpha=0.90, verbose=True):
+def run_risk_averse_sweep(
+    scenarios,
+    betas=None,
+    alpha=0.90,
+    verbose=True,
+    seed=default_seed,
+):
     """
     Run Task 1.4 for both one-price and two-price schemes.
     """
@@ -393,14 +415,16 @@ def run_risk_averse_sweep(scenarios, betas=None, alpha=0.90, verbose=True):
         one_result = solve_one_price_risk_averse(
             scenarios=scenarios,
             beta=beta,
-            alpha=alpha
+            alpha=alpha,
+            seed=seed,
         )
         results.append(one_result)
 
         two_result = solve_two_price_risk_averse(
             scenarios=scenarios,
             beta=beta,
-            alpha=alpha
+            alpha=alpha,
+            seed=seed,
         )
         results.append(two_result)
 

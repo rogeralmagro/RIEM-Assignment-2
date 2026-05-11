@@ -69,7 +69,8 @@ def run_step1():
         scenarios,
         betas=betas,
         alpha=0.90,
-        verbose=True
+        verbose=True,
+        seed=42,
     )
 
     scenario_sensitivity = test_risk_averse_scenario_sensitivity(
