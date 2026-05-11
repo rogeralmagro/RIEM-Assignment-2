@@ -1,6 +1,9 @@
+import os
+
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
+import pandas as pd
 
 def evaluate_one_price(q_DA, scenarios):
     """Evaluate profit of a given day-ahead strategy over all scenarios."""
@@ -25,7 +28,7 @@ def evaluate_one_price(q_DA, scenarios):
     return np.mean(profits), profits
 
 
-def solve_one_price(scenarios):
+def solve_one_price(scenarios, verbose=True):
     """Solve stochastic offering problem under one-price scheme."""
     
     capacity = 500
@@ -40,9 +43,10 @@ def solve_one_price(scenarios):
     # Evaluate resulting strategy
     expected_profit, profits = evaluate_one_price(q_DA, scenarios)
 
-    print("\n--- ONE PRICE ---")
-    print("q_DA:", q_DA)
-    print("Expected profit:", expected_profit)
+    if verbose:
+        print("\n--- ONE PRICE ---")
+        print("q_DA:", q_DA)
+        print("Expected profit:", expected_profit)
 
     return q_DA, expected_profit, profits
 
@@ -76,7 +80,7 @@ def evaluate_two_price(q_DA, scenarios):
     return np.mean(profits), profits
 
 
-def solve_two_price(scenarios):
+def solve_two_price(scenarios, verbose=True):
     N = len(scenarios)
     T = range(24)
     S = range(N)
@@ -85,6 +89,7 @@ def solve_two_price(scenarios):
     # M = capacity
 
     model = gp.Model("two_price_wind")
+    model.Params.OutputFlag = 0
 
     # Variables
     p_DA = model.addVars(T, lb=0, ub=capacity, name="p_DA")
@@ -129,9 +134,10 @@ def solve_two_price(scenarios):
     expected_profit = model.ObjVal
     _, profits = evaluate_two_price(q_DA, scenarios)
 
-    print("\n--- TWO PRICE / GUROBIPY ---")
-    print("q_DA:", q_DA)
-    print("Expected profit:", expected_profit)
+    if verbose:
+        print("\n--- TWO PRICE / GUROBIPY ---")
+        print("q_DA:", q_DA)
+        print("Expected profit:", expected_profit)
 
     return q_DA, expected_profit, profits, model
 
@@ -160,11 +166,11 @@ def cross_validation(scenarios, fold_size=200, n_folds=8, seed=42, run_name="cv_
         out_sample = scenarios_cv[:i*fold_size] + scenarios_cv[(i+1)*fold_size:]
 
         # --- ONE PRICE ---
-        q_one, in_profit_one, _ = solve_one_price(in_sample)
+        q_one, in_profit_one, _ = solve_one_price(in_sample, verbose=False)
         out_profit_one, _ = evaluate_one_price(q_one, out_sample)
 
         # --- TWO PRICE ---
-        q_two, in_profit_two, _, _ = solve_two_price(in_sample)
+        q_two, in_profit_two, _, _ = solve_two_price(in_sample, verbose=False)
         out_profit_two, _ = evaluate_two_price(q_two, out_sample)
 
         results.append({
@@ -247,21 +253,29 @@ def solve_one_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
     expected_profit = prob * gp.quicksum(profit[s] for s in S)
     cvar_profit = eta - (1.0 / (1.0 - alpha)) * prob * gp.quicksum(z[s] for s in S)
 
-    model.setObjective(expected_profit + beta * cvar_profit, GRB.MAXIMIZE)
+    model.setObjective((1.0 - beta) * expected_profit + beta * cvar_profit,GRB.MAXIMIZE)
     model.optimize()
 
     q_DA = np.array([p_DA[t].X for t in T])
     expected_profit_eval, profits = evaluate_one_price(q_DA, scenarios)
     cvar_eval = compute_cvar_profit(profits, alpha=alpha)
+    q_std = float(np.std(q_DA))
 
     return {
         "scheme": "one-price",
         "beta": beta,
         "alpha": alpha,
         "q_DA": q_DA,
+        "q_mean": float(np.mean(q_DA)),
+        "q_std": q_std,
+        "q_min": float(np.min(q_DA)),
+        "q_max": float(np.max(q_DA)),
         "expected_profit": expected_profit_eval,
         "cvar": cvar_eval,
         "profits": profits,
+        "profit_std": float(np.std(profits)),
+        "min_profit": float(np.min(profits)),
+        "p10_profit": float(np.quantile(profits, 0.10)),
         "objective_value": model.ObjVal,
         "solve_time": model.Runtime,
         "n_variables": model.NumVars,
@@ -333,21 +347,29 @@ def solve_two_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
     expected_profit = prob * gp.quicksum(profit[s] for s in S)
     cvar_profit = eta - (1.0 / (1.0 - alpha)) * prob * gp.quicksum(z[s] for s in S)
 
-    model.setObjective(expected_profit + beta * cvar_profit, GRB.MAXIMIZE)
+    model.setObjective((1.0 - beta) * expected_profit + beta * cvar_profit,GRB.MAXIMIZE)
     model.optimize()
 
     q_DA = np.array([p_DA[t].X for t in T])
     expected_profit_eval, profits = evaluate_two_price(q_DA, scenarios)
     cvar_eval = compute_cvar_profit(profits, alpha=alpha)
+    q_std = float(np.std(q_DA))
 
     return {
         "scheme": "two-price",
         "beta": beta,
         "alpha": alpha,
         "q_DA": q_DA,
+        "q_mean": float(np.mean(q_DA)),
+        "q_std": q_std,
+        "q_min": float(np.min(q_DA)),
+        "q_max": float(np.max(q_DA)),
         "expected_profit": expected_profit_eval,
         "cvar": cvar_eval,
         "profits": profits,
+        "profit_std": float(np.std(profits)),
+        "min_profit": float(np.min(profits)),
+        "p10_profit": float(np.quantile(profits, 0.10)),
         "objective_value": model.ObjVal,
         "solve_time": model.Runtime,
         "n_variables": model.NumVars,
@@ -355,17 +377,18 @@ def solve_two_price_risk_averse(scenarios, beta=0.0, alpha=0.90):
     }
 
 
-def run_risk_averse_sweep(scenarios, betas=None, alpha=0.90):
+def run_risk_averse_sweep(scenarios, betas=None, alpha=0.90, verbose=True):
     """
     Run Task 1.4 for both one-price and two-price schemes.
     """
     if betas is None:
-        betas = [0, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00, 5.00]
+        betas = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0]
 
     results = []
 
     for beta in betas:
-        print(f"\n--- Risk-averse run: beta = {beta} ---")
+        if verbose:
+            print(f"\n--- Risk-averse run: beta = {beta} ---")
 
         one_result = solve_one_price_risk_averse(
             scenarios=scenarios,
@@ -381,13 +404,62 @@ def run_risk_averse_sweep(scenarios, betas=None, alpha=0.90):
         )
         results.append(two_result)
 
-        print(
-            f"One-price: E[profit]={one_result['expected_profit']:.2f}, "
-            f"CVaR={one_result['cvar']:.2f}"
-        )
-        print(
-            f"Two-price: E[profit]={two_result['expected_profit']:.2f}, "
-            f"CVaR={two_result['cvar']:.2f}"
-        )
+        if verbose:
+            print(
+                f"One-price: E[profit]={one_result['expected_profit']:.2f}, "
+                f"CVaR={one_result['cvar']:.2f}"
+            )
+            print(
+                f"Two-price: E[profit]={two_result['expected_profit']:.2f}, "
+                f"CVaR={two_result['cvar']:.2f}"
+            )
+            print(f"q_DA one-price: {one_result['q_DA']}")
+            print(f"q_DA two-price: {two_result['q_DA']}")
 
     return results
+
+def test_risk_averse_scenario_sensitivity(
+    scenarios,
+    sample_sizes=None,
+    n_repeats=5,
+    seed=42
+):
+    os.makedirs("results", exist_ok=True)
+    if sample_sizes is None:
+        sample_sizes = [50, 100, 200, 400, 800, 1600]
+
+    rng = np.random.default_rng(seed)
+    rows = []
+
+    for n in sample_sizes:
+        for repeat in range(n_repeats):
+            idx = rng.choice(len(scenarios), size=n, replace=False)
+            subset = [scenarios[i] for i in idx]
+
+            results = run_risk_averse_sweep(
+                scenarios=subset,
+                betas=[0, 1.0],
+                alpha=0.90,
+                verbose=False
+            )
+
+            for r in results:
+                rows.append({
+                    "n_scenarios": n,
+                    "repeat": repeat + 1,
+                    "scheme": r["scheme"],
+                    "beta": r["beta"],
+                    "expected_profit": r["expected_profit"],
+                    "cvar": r["cvar"],
+                    "profit_std": r["profit_std"],
+                    "min_profit": r["min_profit"],
+                    "p10_profit": r["p10_profit"],
+                    "q_mean": r["q_mean"],
+                    "q_std": r["q_std"],
+                    "q_min": r["q_min"],
+                    "q_max": r["q_max"],
+                })
+
+    df = pd.DataFrame(rows)
+    df.to_csv("results/task_1_4_scenario_sensitivity.csv", index=False)
+    return df

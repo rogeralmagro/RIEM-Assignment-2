@@ -1,6 +1,11 @@
-from scenarios import generate_scenarios
-from models import *
-from plots import *
+try:
+    from src.scenarios import generate_scenarios
+    from src.models import *
+    from src.plots import *
+except ModuleNotFoundError:
+    from scenarios import generate_scenarios
+    from models import *
+    from plots import *
 
 def run_step1():
     """
@@ -11,21 +16,21 @@ def run_step1():
     scenarios = generate_scenarios()
 
     # Task 1.1: Offering Strategy Under a One-Price Balancing Scheme
-    q_one, expected_profit_one, profits_one = solve_one_price(scenarios)
-    plot_profit_distribution(profits_one, "1.1 one price")
+    q_one, expected_profit_one, profits_one = solve_one_price(scenarios, verbose=False)
+    # plot_profit_distribution(profits_one, "1.1 one price")
 
     # Task 1.2: Offering Strategy Under a Two-Price Balancing Scheme
-    q_two, expected_profit_two, profits_two, _ = solve_two_price(scenarios)
-    plot_profit_distribution(profits_two, "1.2 two price")
+    q_two, expected_profit_two, profits_two, _ = solve_two_price(scenarios, verbose=False)
+    # plot_profit_distribution(profits_two, "1.2 two price")
 
     # hourly offers comparison
     plot_q_DA(q_one, q_two)
     plot_q_DA2(q_one, q_two)
 
     # Print comparison
-    print("\n--- COMPARISON ---")
-    print("One-price expected profit:", expected_profit_one)
-    print("Two-price expected profit:", expected_profit_two)
+    print("\n--- TASK 1.1 / 1.2 COMPARISON ---")
+    print(f"One-price expected profit: {expected_profit_one:.2f}")
+    print(f"Two-price expected profit: {expected_profit_two:.2f}")
 
     # Task 1.3: Ex-post Analysis
     configs = [
@@ -51,26 +56,32 @@ def run_step1():
 
         all_results[run_name] = results
 
-        plot_cv_by_fold(results, run_name)
-        plot_cv_gaps(results, run_name)
+        # plot_cv_by_fold(results, run_name)
+        # plot_cv_gaps(results, run_name)
 
     # Summary table for variability
     summarize_cv_variability(all_results)
 
-
-     # Task 1.4: Risk-Averse Offering Strategy
-    betas = [0, 0.05, 0.10, 0.25, 0.50, 1.00, 2.00, 5.00] # Risk aversion parameters to sweep
-    # betas = [0, 0.01, 0.025, 0.05, 0.10, 0.25, 0.50, 1.00] # less agressive sweep
+    # Task 1.4: Risk-Averse Offering Strategy
+    betas = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0]
 
     risk_results = run_risk_averse_sweep(
-        scenarios=scenarios,
+        scenarios,
         betas=betas,
-        alpha=0.90
+        alpha=0.90,
+        verbose=True
     )
 
-    plot_expected_profit_vs_cvar(risk_results)
-    plot_risk_averse_offers(risk_results)
-    plot_risk_averse_profit_distributions(risk_results)
+    scenario_sensitivity = test_risk_averse_scenario_sensitivity(
+        scenarios,
+        sample_sizes=[50, 100, 200, 400, 800, 1600],
+        n_repeats=5,
+        seed=42
+    )
+
+    plot_task_1_4_report_figures(risk_results, scenario_sensitivity)
+
+
 
 if __name__ == "__main__":
     run_step1()
