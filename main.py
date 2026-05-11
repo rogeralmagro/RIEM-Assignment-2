@@ -16,8 +16,7 @@ def main():
     print("-----------------")
 
     # Step 1: day-ahead and balancing market participation
-    # Uncomment when Step 1 is implemented.
-    # run_step1()
+    run_step1()
 
     # Step 2: ancillary service market participation
     run_step2()

@@ -1010,6 +1010,121 @@ def run_task_2_2():
     print(f"- {RESULTS_DIR / 'task_2_2_shortfall_distribution.png'}")
     print(f"- {RESULTS_DIR / 'task_2_2_positive_shortfall_distribution.png'}")
 
+    # ============================================================
+# 8. Energinet perspective for Task 2.3
+# ============================================================
+
+def run_task_2_3():
+    """
+    Run Task 2.3:
+    analyse the effect of the reliability requirement on:
+    - the optimal ALSO-X reserve bid,
+    - the expected reserve shortfall.
+    """
+
+    # Load data
+    load_profiles = pd.read_csv(DATA_PATH)
+
+    # Compute hourly reserve availability
+    availability = (
+        load_profiles.groupby(['profile', 'set'])['load_kW']
+        .min()
+        .reset_index()
+        .rename(columns={'load_kW': 'availability_kW'})
+    )
+
+    # Split data
+    in_sample = availability[
+        availability['set'] == 'in_sample'
+    ]['availability_kW'].values
+
+    out_sample = availability[
+        availability['set'] == 'out_of_sample'
+    ]['availability_kW'].values
+
+    # ALSO-X reserve bid function
+    def alsox(avail, rel):
+
+        avail_sorted = np.sort(avail)
+        n = len(avail_sorted)
+
+        if rel >= 0.999:
+            return avail_sorted[0]
+
+        k = int(np.floor((1 - rel) * n))
+        k = min(max(k, 0), n - 1)
+
+        return avail_sorted[k]
+
+    # Run analysis
+    rows = []
+
+    for r in np.arange(0.80, 1.01, 0.01):
+
+        bid = alsox(in_sample, r)
+
+        shortfall = np.maximum(0, bid - out_sample)
+
+        rows.append([r, bid, np.mean(shortfall)])
+
+    # Create results table
+    res = pd.DataFrame(
+        rows,
+        columns=['Reliability', 'Bid', 'Expected Shortfall']
+    )
+
+    # Plot reserve bid versus reliability
+    plt.figure()
+
+    plt.plot(res['Reliability'], res['Bid'], marker='o')
+
+    plt.xlabel('Reliability')
+    plt.ylabel('Reserve Bid (kW)')
+    plt.title('Reliability vs Reserve Bid')
+
+    plt.grid()
+
+    plt.savefig(
+        RESULTS_DIR / 'task_2_3_reserve_bid.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+
+    plt.close()
+
+    # Plot expected shortfall versus reliability
+    plt.figure()
+
+    plt.plot(
+        res['Reliability'],
+        res['Expected Shortfall'],
+        marker='o'
+    )
+
+    plt.xlabel('Reliability')
+    plt.ylabel('Expected Shortfall (kW)')
+    plt.title('Reliability vs Shortfall')
+
+    plt.grid()
+
+    plt.savefig(
+        RESULTS_DIR / 'task_2_3_shortfall.png',
+        dpi=300,
+        bbox_inches='tight'
+    )
+
+    plt.close()
+
+    # Save results
+    res.to_csv(
+        RESULTS_DIR / 'task_2_3_results.csv',
+        index=False
+    )
+
+    print("\nTask 2.3 completed successfully.")
+    print("--------------------------------")
+    print(res)
+
 def run_step2():
     """
     Run the Step 2 workflow.
@@ -1024,3 +1139,6 @@ def run_step2():
 
     # Run Task 2.2.
     run_task_2_2()
+
+    # Run Task 2.3
+    run_task_2_3()
